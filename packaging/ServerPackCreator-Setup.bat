@@ -89,7 +89,7 @@ endlocal & exit /b %SPC_RC%
 # ===========================================================================
 
 # The repository this build is published from. Replace before publishing.
-$Repo    = 'compound0921/ServerPackCreator-CN'
+$Repo    = 'compound0921/ServerPackCreator-Patch'
 $Version = '8.1.2'
 
 # Upstream project this is derived from, for the notice we install alongside it.

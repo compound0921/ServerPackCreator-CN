@@ -39,6 +39,40 @@ import javax.net.ssl.HttpsURLConnection
 class WebUtilities(private val apiProperties: ApiProperties) {
     private val log by lazy { cachedLoggerOf(this.javaClass) }
 
+    companion object {
+        /**
+         * Time to wait for a connection to be established, in milliseconds. The JVM defaults to `0`
+         * here, which means "wait forever" - a single unresponsive host would then stall whichever
+         * thread made the call, including the main thread during the startup of ServerPackCreator.
+         */
+        const val CONNECT_TIMEOUT_MILLISECONDS = 5_000
+
+        /**
+         * Time to wait for data on an already established connection, in milliseconds. This is a
+         * timeout per read, not for the whole transfer, so downloads are unaffected for as long as
+         * data keeps arriving.
+         */
+        const val READ_TIMEOUT_MILLISECONDS = 15_000
+
+        /**
+         * Open a connection to the given URL with sane connect- and read-timeouts applied, so a
+         * web-resource which is unreachable or hanging cannot block the calling thread indefinitely.
+         *
+         * Use this instead of [URL.openConnection] or [URL.openStream] for anything reaching out to
+         * a host you do not control.
+         *
+         * @param url The URL to open a connection to.
+         * @return The connection, with [HttpURLConnection.connectTimeout] and
+         * [HttpURLConnection.readTimeout] set.
+         * @author Griefed
+         */
+        fun openConnection(url: URL): HttpURLConnection =
+            (url.openConnection() as HttpURLConnection).also {
+                it.connectTimeout = CONNECT_TIMEOUT_MILLISECONDS
+                it.readTimeout = READ_TIMEOUT_MILLISECONDS
+            }
+    }
+
     /**
      * Download the file from the specified URL to the specified destination, replacing the file if it
      * already exists. The destination should end in a valid filename. Any directories up to the
@@ -76,7 +110,7 @@ class WebUtilities(private val apiProperties: ApiProperties) {
     ): Boolean {
         file.create()
         try {
-            downloadURL.openStream().use { url ->
+            openConnection(downloadURL).inputStream.use { url ->
                 Channels.newChannel(url).use { channel ->
                     file.outputStream().use { stream ->
                         stream.channel.transferFrom(channel, 0, Long.MAX_VALUE)
@@ -169,7 +203,7 @@ class WebUtilities(private val apiProperties: ApiProperties) {
         val postDataLength = postData.size
 
         try {
-            conn = url.openConnection() as HttpsURLConnection
+            conn = openConnection(url) as HttpsURLConnection
         } catch (ex: IOException) {
             log.error("Error during opening of connection to URL.", ex)
         }
@@ -241,7 +275,7 @@ class WebUtilities(private val apiProperties: ApiProperties) {
      */
     @Throws(IOException::class)
     fun getResponseAsString(url: URL): String {
-        val `in` = BufferedReader(InputStreamReader(url.openConnection().getInputStream()))
+        val `in` = BufferedReader(InputStreamReader(openConnection(url).inputStream))
         val response = StringBuilder()
         var currentLine: String?
         while (`in`.readLine().also { currentLine = it } != null) {
@@ -260,8 +294,7 @@ class WebUtilities(private val apiProperties: ApiProperties) {
      */
     @Throws(IOException::class)
     fun getResponseCode(url: URL): Int {
-        val connection = url.openConnection() as HttpURLConnection
-        return connection.responseCode
+        return openConnection(url).responseCode
     }
 
     /**
@@ -279,7 +312,7 @@ class WebUtilities(private val apiProperties: ApiProperties) {
             val host = url.host
             log.trace("URL:  $url")
             log.trace("Host: $host")
-            connection = url.openConnection() as HttpURLConnection
+            connection = openConnection(url)
             available = connection.responseCode == 200
         } catch (e: IOException) {
             available = false

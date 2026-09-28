@@ -38,6 +38,7 @@ import java.io.*
 import java.net.URI
 import java.net.URL
 import java.util.*
+import java.util.concurrent.Executors
 import java.util.prefs.Preferences
 
 /**
@@ -2302,12 +2303,12 @@ class ApiProperties(propertiesFile: File = File("serverpackcreator.properties"))
         // Load all values from the overrides-properties
         loadOverrides(overridesPropertiesFile)
 
-        if (updateFallback()) {
-            log.info("Fallback lists updated.")
-        } else {
-            setFallbackModsList()
-            setFallbackWhitelist()
-        }
+        // Populate the fallback lists from our local properties right away, and check for updated
+        // lists in the background. Downloading them used to happen right here, which stalled every
+        // startup until GitHub answered.
+        setFallbackModsList()
+        setFallbackWhitelist()
+        updateFallbackAsync()
         if (saveProps) {
             //Store properties in the configured SPC home-directory
             saveProperties(serverPackCreatorPropertiesFile)
@@ -2696,8 +2697,34 @@ class ApiProperties(propertiesFile: File = File("serverpackcreator.properties"))
      *
      * `true` if either was updated.
      */
+    @Volatile
     var fallbackUpdated: Boolean = false
         private set
+
+    /**
+     * Executor used to check for updated fallback lists without blocking startup or the
+     * event-dispatch-thread.
+     */
+    private val fallbackUpdateExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "ServerPackCreator-fallback-update").apply { isDaemon = true }
+    }
+
+    /**
+     * Update the fallback lists in the background, so neither the startup of ServerPackCreator nor
+     * the event-dispatch-thread has to wait for GitHub to answer.
+     *
+     * Should the remote lists differ from our local ones, [clientsideMods] and [modsWhitelist] are
+     * replaced once the download has finished, and [fallbackUpdated] is set to `true`.
+     *
+     * @author Griefed
+     */
+    fun updateFallbackAsync() {
+        fallbackUpdateExecutor.execute {
+            if (updateFallback()) {
+                log.info("Fallback lists updated.")
+            }
+        }
+    }
 
     /**
      * Update the fallback clientside-only mod-list of our `serverpackcreator.properties` from
@@ -2709,9 +2736,9 @@ class ApiProperties(propertiesFile: File = File("serverpackcreator.properties"))
     fun updateFallback(): Boolean {
         var properties: Properties? = null
         try {
-            URI(
-                acquireProperty(pConfigurationFallbackUpdateURL, fallbackUpdateURL)
-            ).toURL().openStream().use {
+            WebUtilities.openConnection(
+                URI(acquireProperty(pConfigurationFallbackUpdateURL, fallbackUpdateURL)).toURL()
+            ).inputStream.use {
                 properties = Properties()
                 properties!!.load(it)
             }
@@ -2724,8 +2751,9 @@ class ApiProperties(propertiesFile: File = File("serverpackcreator.properties"))
             val currentBlacklist = internalProps.getProperty(pConfigurationFallbackModsList)
             if (newBlacklist != null && currentBlacklist != newBlacklist) {
                 internalProps.setProperty(pConfigurationFallbackModsList, newBlacklist)
-                clientsideMods.clear()
-                clientsideMods.addAll(internalProps.getProperty(pConfigurationFallbackModsList).split(","))
+                // Assign a fresh set instead of clearing and refilling ours in place, so readers
+                // iterating over it cannot run into a ConcurrentModificationException.
+                clientsideMods = TreeSet(newBlacklist.split(","))
                 log.info("The fallback-list for clientside only mods has been updated to: $clientsideMods")
                 fallbackUpdated = true
             }
@@ -2734,8 +2762,7 @@ class ApiProperties(propertiesFile: File = File("serverpackcreator.properties"))
             val currentWhitelist = internalProps.getProperty(pConfigurationFallbackModsWhiteList)
             if (newWhitelist != null && currentWhitelist != newWhitelist) {
                 internalProps.setProperty(pConfigurationFallbackModsWhiteList, newWhitelist)
-                modsWhitelist.clear()
-                modsWhitelist.addAll(internalProps.getProperty(pConfigurationFallbackModsWhiteList).split(","))
+                modsWhitelist = TreeSet(newWhitelist.split(","))
                 log.info("The fallback-list for whitelisted mods has been updated to: $modsWhitelist")
                 fallbackUpdated = true
             }

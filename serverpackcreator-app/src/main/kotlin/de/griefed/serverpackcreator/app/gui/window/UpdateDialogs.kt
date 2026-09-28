@@ -33,9 +33,11 @@ import java.awt.datatransfer.Clipboard
 import java.awt.datatransfer.StringSelection
 import java.awt.event.ActionListener
 import java.util.*
+import java.util.concurrent.Executors
 import javax.swing.JFrame
 import javax.swing.JOptionPane
 import javax.swing.JTextPane
+import javax.swing.SwingUtilities
 import javax.swing.text.*
 
 /**
@@ -57,18 +59,30 @@ class UpdateDialogs(
     private var i4JExecute = false*/
     val updateButton = BalloonTipButton(null, guiProps.updateAnimation, Translations.update_dialog_available.toString(), guiProps)
     val updateCheckListener = ActionListener { checkForUpdate() }
-    var update: Optional<Update> = updateChecker.checkForUpdate(
-        apiProperties.apiVersion,
-        apiProperties.isCheckingForPreReleasesEnabled
-    )
-        private set
 
+    /**
+     * The update found for this instance, if any. Populated in the background shortly after
+     * construction - see [init].
+     */
+    @Volatile
+    var update: Optional<Update> = Optional.empty()
+        private set
 
     init {
         updateButton.isBorderPainted = false
         updateButton.isContentAreaFilled = false
         updateButton.isVisible = update.isPresent
         updateButton.addActionListener(updateCheckListener)
+        // Check for a new release in the background, so building the main window does not have to
+        // wait for GitHub. The update-button pops in once the check has finished.
+        UPDATE_CHECK_EXECUTOR.execute {
+            val checked = updateChecker.checkForUpdate(
+                apiProperties.apiVersion,
+                apiProperties.isCheckingForPreReleasesEnabled
+            )
+            update = checked
+            SwingUtilities.invokeLater { updateButton.isVisible = checked.isPresent }
+        }
         //checkForUpdateWithApi()
     }
 
@@ -349,4 +363,14 @@ class UpdateDialogs(
             )
         }.start()
     }*/
+
+    companion object {
+        /**
+         * Executor used to check for a new release in the background, so building the main window
+         * does not have to wait for GitHub.
+         */
+        private val UPDATE_CHECK_EXECUTOR = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "ServerPackCreator-update-dialogs").apply { isDaemon = true }
+        }
+    }
 }

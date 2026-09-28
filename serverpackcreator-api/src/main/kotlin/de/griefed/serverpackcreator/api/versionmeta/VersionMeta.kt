@@ -23,6 +23,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import de.griefed.serverpackcreator.api.ApiProperties
 import de.griefed.serverpackcreator.api.utilities.common.JarUtilities
 import de.griefed.serverpackcreator.api.utilities.common.Utilities
+import de.griefed.serverpackcreator.api.utilities.common.WebUtilities
 import de.griefed.serverpackcreator.api.utilities.common.create
 import de.griefed.serverpackcreator.api.utilities.common.readText
 import de.griefed.serverpackcreator.api.versionmeta.fabric.FabricIntermediaries
@@ -299,15 +300,9 @@ class VersionMeta(
         manifestType: Type
     ) {
         if (manifestToCheck.isFile) {
-            if (!utilities.webUtilities.isReachable(urlToManifest)) {
-                log.warn(
-                    "Can not connect to $urlToManifest to check for update(s) of $manifestToCheck."
-                )
-                return
-            }
             try {
                 manifestToCheck.inputStream().use { existing ->
-                    urlToManifest.openStream().use { newManifest ->
+                    WebUtilities.openConnection(urlToManifest).inputStream.use { newManifest ->
                         var countOldFile = 0
                         var countNewFile = 0
                         val oldContent: String = existing.readText()
@@ -392,14 +387,12 @@ class VersionMeta(
                 log.error("Couldn't refresh manifest $manifestToCheck", ex)
             }
         } else {
-            if (!utilities.webUtilities.isReachable(urlToManifest)) {
+            if (!updateManifest(manifestToCheck, urlToManifest)) {
                 log.error("CRITICAL! $manifestToCheck not present and $ urlToManifest unreachable. Exiting...")
                 log.error(
                     "ServerPackCreator should have provided default manifests. Please report this on GitHub at https://github.com/Griefed/ServerPackCreator/issues/new?assignees=Griefed&labels=bug&template=bug-report.yml&title=%5BBug%5D%3A+"
                 )
                 log.error("Make sure you include this log when reporting an error! Please....")
-            } else {
-                updateManifest(manifestToCheck, urlToManifest)
             }
         }
     }
@@ -426,19 +419,22 @@ class VersionMeta(
      *
      * @param manifestToRefresh The manifest file to update.
      * @param urlToManifest     The URL to the file which is to be downloaded.
+     * @return `true` if the manifest could be downloaded and written.
      * @author whitebear60
      * @author Griefed
      */
     private fun updateManifest(
         manifestToRefresh: File,
         urlToManifest: URL
-    ) {
-        try {
-            urlToManifest.openStream().use {
+    ): Boolean {
+        return try {
+            WebUtilities.openConnection(urlToManifest).inputStream.use {
                 updateManifest(manifestToRefresh, it.readText())
             }
+            true
         } catch (ex: IOException) {
             log.error("An error occurred refreshing $manifestToRefresh.", ex)
+            false
         }
     }
 

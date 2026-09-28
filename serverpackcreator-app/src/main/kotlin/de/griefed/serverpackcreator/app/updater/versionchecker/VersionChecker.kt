@@ -27,11 +27,11 @@ import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import de.griefed.serverpackcreator.api.utilities.common.Comparison
 import de.griefed.serverpackcreator.api.utilities.common.SemanticVersionComparator
+import de.griefed.serverpackcreator.api.utilities.common.WebUtilities
 import org.apache.logging.log4j.kotlin.cachedLoggerOf
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
-import java.net.HttpURLConnection
 import java.net.URL
 import java.util.*
 
@@ -301,7 +301,7 @@ abstract class VersionChecker {
      */
     @Throws(IOException::class)
     protected fun getResponse(requestUrl: URL): String {
-        val httpURLConnection = requestUrl.openConnection() as HttpURLConnection
+        val httpURLConnection = WebUtilities.openConnection(requestUrl)
         httpURLConnection.requestMethod = "GET"
         if (httpURLConnection.responseCode != 200) throw IOException("Request for " + requestUrl + " responded with " + httpURLConnection.responseCode)
         val bufferedReader = BufferedReader(

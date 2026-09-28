@@ -25,6 +25,9 @@ import de.griefed.serverpackcreator.app.updater.versionchecker.Update
 import org.apache.logging.log4j.kotlin.cachedLoggerOf
 import java.io.IOException
 import java.util.*
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 
 /**
  * Initialize our GitHub and GitLab instances with the corresponding repository addresses, so we can
@@ -34,23 +37,43 @@ import java.util.*
  */
 class UpdateChecker(private val apiProperties: ApiProperties) {
     private val log by lazy { cachedLoggerOf(this.javaClass) }
-    private var gitHub: GitHubChecker? = null
 
     /**
-     * Constructor for Dependency Injection.
+     * The initial GitHub-check is performed in the background. Doing it in the constructor blocked
+     * every startup until GitHub answered, even though nothing needs the result right away.
      *
+     * Callers which do need it await this future via [gitHub].
+     */
+    private val gitHubPrefetch: Future<GitHubChecker?> =
+        REFRESH_EXECUTOR.submit(Callable { initGitHub() })
+
+    /**
+     * Initialize our [GitHubChecker].
+     *
+     * @return The initialized checker, or `null` if GitHub could not be reached.
      * @author Griefed
      */
-    init {
-        gitHub = try {
-            GitHubChecker("Griefed/ServerPackCreator").refresh()
-        } catch (ex: IOException) {
-            log.error(
-                "Either GitHub is currently unreachable, or the GitHub user/repository you set resulted in a malformed URL. "
-                        + ex.message
-            )
-            null
-        }
+    private fun initGitHub(): GitHubChecker? = try {
+        GitHubChecker("Griefed/ServerPackCreator").refresh()
+    } catch (ex: IOException) {
+        log.error(
+            "Either GitHub is currently unreachable, or the GitHub user/repository you set resulted in a malformed URL. "
+                    + ex.message
+        )
+        null
+    }
+
+    /**
+     * Our [GitHubChecker], awaiting the background prefetch should it not have finished yet.
+     *
+     * @return Our [GitHubChecker], or `null` if GitHub could not be reached.
+     * @author Griefed
+     */
+    private fun gitHub(): GitHubChecker? = try {
+        gitHubPrefetch.get()
+    } catch (ex: Exception) {
+        log.error("Error acquiring GitHub-checker.", ex)
+        null
     }
 
     /**
@@ -59,15 +82,15 @@ class UpdateChecker(private val apiProperties: ApiProperties) {
      * @author Griefed
      */
     private fun refresh() {
-        if (gitHub == null) {
+        val checker = gitHub()
+        if (checker == null) {
             log.warn("Not checking for updates. GitHub Checking not initialized.")
             return
         }
         try {
-            gitHub!!.refresh()
+            checker.refresh()
         } catch (ex: Exception) {
             log.error("Error refreshing GitHub.", ex)
-            gitHub = null
         }
 
     }
@@ -84,12 +107,13 @@ class UpdateChecker(private val apiProperties: ApiProperties) {
      * @author Griefed
      */
     fun checkForUpdate(version: String, preReleaseCheck: Boolean): Optional<Update> {
-        if (version.equals("dev", ignoreCase = true) || gitHub == null) {
+        val checker = gitHub()
+        if (version.equals("dev", ignoreCase = true) || checker == null) {
             log.warn("Not checking for updates. Either using a dev-version, or GitHub Checking is not initialized.")
             return Optional.empty()
         }
         log.debug("Checking GitHub for updates...")
-        return gitHub!!.check(version, preReleaseCheck)
+        return checker.check(version, preReleaseCheck)
     }
 
     /**
@@ -125,5 +149,15 @@ class UpdateChecker(private val apiProperties: ApiProperties) {
         }
 
         return update.isPresent
+    }
+
+    companion object {
+        /**
+         * Executor used to perform the initial GitHub-check in the background, so it does not block
+         * the startup of ServerPackCreator.
+         */
+        private val REFRESH_EXECUTOR = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "ServerPackCreator-update-check").apply { isDaemon = true }
+        }
     }
 }

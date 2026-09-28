@@ -1,0 +1,4 @@
+# cmd.exe is unreliable with LF-only batch files once they contain goto labels,
+# and a clone with core.autocrlf=false (or on Linux/macOS) would produce exactly
+# that. Pin the line endings for the installer regardless of local git config.
+*.bat text eol=crlf

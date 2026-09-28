@@ -1,0 +1,93 @@
+# To get started with Dependabot version updates, you'll need to specify which
+# package ecosystems to update and where the package manifests are located.
+# Please see the documentation for all configuration options:
+# https://help.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    assignees:
+      - "Griefed"
+    labels:
+     - "dependencies"
+     - "github-actions"
+    target-branch: "develop"
+    pull-request-branch-name:
+      separator: "-"
+
+###################################################
+#.....................GRADLE......................#
+###################################################
+  - package-ecosystem: "gradle"
+    directory: "/serverpackcreator-api"
+    schedule:
+      interval: "monthly"
+    assignees:
+      - "Griefed"
+    labels:
+      - "dependencies"
+      - "gradle"
+    target-branch: "develop"
+    pull-request-branch-name:
+      separator: "-"
+
+  - package-ecosystem: "gradle"
+    directory: "/serverpackcreator-app"
+    schedule:
+      interval: "monthly"
+    assignees:
+      - "Griefed"
+    labels:
+      - "dependencies"
+      - "gradle"
+    target-branch: "develop"
+    pull-request-branch-name:
+      separator: "-"
+
+  - package-ecosystem: "gradle"
+    directory: "/serverpackcreator-plugin-example"
+    schedule:
+      interval: "monthly"
+    assignees:
+      - "Griefed"
+    labels:
+      - "dependencies"
+      - "gradle"
+    target-branch: "develop"
+    pull-request-branch-name:
+      separator: "-"
+
+###################################################
+#.......................NPM.......................#
+###################################################
+  - package-ecosystem: "npm"
+    directory: "/serverpackcreator-web-frontend"
+    schedule:
+      interval: "monthly"
+    assignees:
+      - "Griefed"
+    labels:
+      - "dependencies"
+      - "npm"
+    target-branch: "develop"
+    pull-request-branch-name:
+      separator: "-"
+
+###################################################
+#.....................DOCKER......................#
+###################################################
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    assignees:
+      - "Griefed"
+    labels:
+      - "dependencies"
+      - "docker"
+    target-branch: "develop"
+    pull-request-branch-name:
+      separator: "-"

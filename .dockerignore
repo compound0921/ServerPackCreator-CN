@@ -1,0 +1,14 @@
+# dot-files and folders
+.github/
+.gradle/
+.idea/
+.runConfigurations/
+docker/docker-compose-dev.yml
+docker/docker-compose.yml
+*/build
+*/out
+*/.quasar
+*/dist
+*/node
+*/node_modules
+*/tests/

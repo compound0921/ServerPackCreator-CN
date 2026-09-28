@@ -21,7 +21,7 @@ You do **not** need to download any source code or build anything.
 
 Download **`ServerPackCreator-Setup.bat`** and double-click it.
 
-    https://github.com/OWNER/REPO/releases/latest/download/ServerPackCreator-Setup.bat
+    https://github.com/compound0921/ServerPackCreator-CN/releases/latest/download/ServerPackCreator-Setup.bat
 
 That single file is the whole installer. It checks for Java, downloads the application, creates
 the launchers and a Start Menu entry, and installs to `%LOCALAPPDATA%\ServerPackCreator`. No

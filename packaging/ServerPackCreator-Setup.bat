@@ -9,6 +9,9 @@ rem
 rem  You do NOT need to download any source code, and you do NOT need to build
 rem  anything yourself.
 rem
+rem  Double-clicking asks where to install. Passing -InstallDir skips the question,
+rem  which is what scripts and unattended runs should do.
+rem
 rem  Options (from a command prompt):
 rem     ServerPackCreator-Setup.bat -InstallDir "D:\ServerPackCreator"
 rem     ServerPackCreator-Setup.bat -JavaPath "C:\path\to\jdk-21\bin\java.exe"
@@ -40,7 +43,8 @@ goto usage
 echo.
 echo Usage: ServerPackCreator-Setup.bat [options]
 echo.
-echo   -InstallDir ^<path^>  Where to install. Default: %%LOCALAPPDATA%%\ServerPackCreator
+echo   -InstallDir ^<path^>  Where to install. Omit it to be asked. Default:
+echo                        %%LOCALAPPDATA%%\ServerPackCreator
 echo   -JavaPath    ^<path^>  Path to java.exe to use.
 echo   -JarPath     ^<path^>  Install from a local JAR instead of downloading one.
 echo   -Uninstall           Remove a previous installation.
@@ -88,10 +92,11 @@ $JarFileName  = 'serverpackcreator-app.jar'   # stable name, so /releases/latest
 $JarUrl       = "https://github.com/$Repo/releases/latest/download/$JarFileName"
 $MinJavaMajor = 21
 
-$InstallDir = if ($env:SPC_INSTALLDIR) { $env:SPC_INSTALLDIR } else { Join-Path $env:LOCALAPPDATA $AppName }
-$JavaPath   = $env:SPC_JAVAPATH
-$JarPath    = $env:SPC_JARPATH
-$Uninstall  = [bool]$env:SPC_UNINSTALL
+$InstallDir        = $env:SPC_INSTALLDIR
+$defaultInstallDir = Join-Path $env:LOCALAPPDATA $AppName
+$JavaPath          = $env:SPC_JAVAPATH
+$JarPath           = $env:SPC_JARPATH
+$Uninstall         = [bool]$env:SPC_UNINSTALL
 
 function Write-Step  { param([string]$m) Write-Host "  $m" }
 function Write-Ok    { param([string]$m) Write-Host "  $m" -ForegroundColor Green }
@@ -101,6 +106,34 @@ function Fail        { param([string]$m) Write-Host "`nERROR: $m`n" -ForegroundC
 # Windows PowerShell 5.1 defaults to TLS 1.0, which GitHub rejects.
 if ($PSVersionTable.PSVersion.Major -lt 6) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+}
+
+# Ask where to install, unless -InstallDir was passed. Enter accepts the default.
+# Skipped when stdin is not a terminal, so redirected and unattended runs do not hang.
+if (-not $InstallDir) {
+    $answer = ''
+    try {
+        if (-not [Console]::IsInputRedirected) {
+            Write-Host ''
+            Write-Host '  Where should ServerPackCreator be installed?'
+            Write-Host '  Press Enter to accept the default.' -ForegroundColor DarkGray
+            Write-Host ''
+            Write-Host '  Install location ' -NoNewline
+            Write-Host "[$defaultInstallDir]" -NoNewline -ForegroundColor DarkGray
+            Write-Host ' '
+            $answer = Read-Host
+        }
+    } catch {
+        $answer = ''
+    }
+    $InstallDir = if ($answer -and $answer.Trim()) { $answer.Trim().Trim('"') } else { $defaultInstallDir }
+}
+
+# Resolve to an absolute path so the launchers and the reported location agree.
+try {
+    $InstallDir = [IO.Path]::GetFullPath($InstallDir)
+} catch {
+    Fail "Not a usable install path: $InstallDir"
 }
 
 function Get-JavaMajorVersion {
@@ -285,6 +318,96 @@ unusual, point this installer at it:
 }
 Write-Ok "Using Java $($java.Major): $($java.Path)"
 
+# ---------------------------------------------------------------- download
+
+<#
+    Redraw the download progress line in place. Deliberately hand-rolled rather than
+    using Write-Progress: the built-in progress bar costs enough per update to make
+    large downloads markedly slower, which is why it is normally switched off.
+#>
+function Write-DownloadProgress {
+    param(
+        [long]$Done,
+        [long]$Total,
+        [DateTime]$Started,
+        [switch]$Final
+    )
+
+    if ([Console]::IsOutputRedirected) {
+        if ($Final) { Write-Host ("  Downloaded {0:N1} MB" -f ($Done / 1MB)) }
+        return
+    }
+
+    $elapsed = ([DateTime]::UtcNow - $Started).TotalSeconds
+    $speed   = if ($elapsed -gt 0) { $Done / $elapsed } else { 0 }
+
+    if ($Total -gt 0) {
+        $percent = [math]::Min(100, [int](100 * $Done / $Total))
+        $width   = 30
+        $filled  = [int]($width * $percent / 100)
+        $bar     = ('#' * $filled).PadRight($width, '-')
+        $line    = "  [{0}] {1,3}%   {2,6:N1} / {3:N1} MB   {4,5:N1} MB/s" -f `
+                       $bar, $percent, ($Done / 1MB), ($Total / 1MB), ($speed / 1MB)
+    } else {
+        $line    = "  Downloaded {0:N1} MB   {1:N1} MB/s" -f ($Done / 1MB), ($speed / 1MB)
+    }
+
+    # [char]13 rather than `r: this text is embedded in a .bat and read back by
+    # Invoke-Expression, where a backtick escape is easy to lose.
+    Write-Host ([char]13 + $line.PadRight(74)) -NoNewline
+    if ($Final) { Write-Host '' }
+}
+
+<#
+    Download $Url to $Destination, drawing a progress line while it runs.
+    Streams in 80 KB chunks and only redraws every 200 ms, so the reporting itself
+    stays cheap.
+#>
+function Get-RemoteFile {
+    param(
+        [Parameter(Mandatory)][string]$Url,
+        [Parameter(Mandatory)][string]$Destination
+    )
+
+    $request                   = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($Url)
+    $request.UserAgent         = 'ServerPackCreator-Setup'
+    $request.AllowAutoRedirect = $true
+    $request.Timeout           = 60000
+    $request.ReadWriteTimeout  = 60000
+
+    $response  = $null
+    $inStream  = $null
+    $outStream = $null
+    try {
+        $response  = $request.GetResponse()
+        $total     = $response.ContentLength
+        $inStream  = $response.GetResponseStream()
+        $outStream = [IO.File]::Create($Destination)
+
+        $buffer   = New-Object byte[] 81920
+        $done     = [long]0
+        $started  = [DateTime]::UtcNow
+        $lastDraw = $started
+
+        while (($read = $inStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $outStream.Write($buffer, 0, $read)
+            $done += $read
+
+            $now = [DateTime]::UtcNow
+            if (($now - $lastDraw).TotalMilliseconds -ge 200) {
+                Write-DownloadProgress -Done $done -Total $total -Started $started
+                $lastDraw = $now
+            }
+        }
+        $outStream.Flush()
+        Write-DownloadProgress -Done $done -Total $total -Started $started -Final
+    } finally {
+        if ($outStream) { $outStream.Dispose() }
+        if ($inStream)  { $inStream.Dispose() }
+        if ($response)  { $response.Dispose() }
+    }
+}
+
 # ---------------------------------------------------------------- jar
 
 $appDir = Join-Path $InstallDir $AppSubdir
@@ -299,13 +422,15 @@ if ($JarPath) {
     Write-Step "Copying local JAR $JarPath ..."
     Copy-Item -LiteralPath $JarPath -Destination $jarDestination -Force
 } else {
-    Write-Step 'Downloading ServerPackCreator (about 76 MB, this can take a moment)...'
+    Write-Step 'Downloading ServerPackCreator (about 76 MB)...'
+    Write-Host ''
     try {
-        $progress = $ProgressPreference
-        $ProgressPreference = 'SilentlyContinue'   # the progress bar makes large downloads far slower
-        Invoke-WebRequest -Uri $JarUrl -OutFile $jarDestination -UseBasicParsing
-        $ProgressPreference = $progress
+        Get-RemoteFile -Url $JarUrl -Destination $jarDestination
     } catch {
+        # Do not leave a half-written JAR behind for the launchers to find.
+        if (Test-Path -LiteralPath $jarDestination) {
+            Remove-Item -LiteralPath $jarDestination -Force -ErrorAction SilentlyContinue
+        }
         Fail @"
 Download failed: $($_.Exception.Message)
 
@@ -314,6 +439,7 @@ Download failed: $($_.Exception.Message)
 Check your internet connection, or whether a release has been published yet.
 "@
     }
+    Write-Host ''
 }
 $sizeMb = [math]::Round((Get-Item -LiteralPath $jarDestination).Length / 1MB, 1)
 Write-Ok "Installed $JarFileName ($sizeMb MB)"

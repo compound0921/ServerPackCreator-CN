@@ -23,9 +23,15 @@ Download **`ServerPackCreator-Setup.bat`** and double-click it.
 
     https://github.com/compound0921/ServerPackCreator-CN/releases/latest/download/ServerPackCreator-Setup.bat
 
-That single file is the whole installer. It checks for Java, downloads the application, creates
-the launchers and a Start Menu entry, and installs to `%LOCALAPPDATA%\ServerPackCreator`. No
-administrator rights are needed.
+That single file is the whole installer. It asks where to install, checks for Java, downloads
+the application, and creates the launchers and a Start Menu entry. No administrator rights are
+needed; the suggested location is `%LOCALAPPDATA%\ServerPackCreator`.
+
+The download shows progress, so a slow connection does not look like a hang:
+
+```
+  [############------------------]  41%     29.8 / 72.5 MB     8.1 MB/s
+```
 
 > **Windows may warn you first.** A `.bat` file downloaded from the internet carries a "mark of
 > the web" and SmartScreen will offer to block it. To allow it, right-click the file, choose
@@ -34,11 +40,15 @@ administrator rights are needed.
 
 ### Choosing where it goes
 
-From a command prompt, in the folder you saved the file to:
+Just press Enter to accept the suggested location, or type another one. To skip the question —
+from a command prompt, in the folder you saved the file to:
 
 ```
 ServerPackCreator-Setup.bat -InstallDir "D:\ServerPackCreator"
 ```
+
+Scripts and unattended runs should pass `-InstallDir`. When input is not a terminal the
+question is skipped automatically and the default is used.
 
 ### Other options
 

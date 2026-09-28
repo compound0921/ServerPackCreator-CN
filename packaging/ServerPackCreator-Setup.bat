@@ -9,11 +9,17 @@ rem
 rem  You do NOT need to download any source code, and you do NOT need to build
 rem  anything yourself.
 rem
-rem  Double-clicking asks where to install. Passing -InstallDir skips the question,
+rem  Double-clicking asks where to put it. Passing -Location skips the question,
 rem  which is what scripts and unattended runs should do.
 rem
+rem  The location is a place to put ServerPackCreator in, not the folder it is
+rem  installed as: a folder named ServerPackCreator is created inside it and
+rem  everything goes there. Pointing at a desktop or a downloads folder therefore
+rem  leaves that folder itself untouched.
+rem
 rem  Options (from a command prompt):
-rem     ServerPackCreator-Setup.bat -InstallDir "D:\ServerPackCreator"
+rem     ServerPackCreator-Setup.bat -Location "D:\"
+rem     ServerPackCreator-Setup.bat -Location "C:\Users\you\Desktop"
 rem     ServerPackCreator-Setup.bat -JavaPath "C:\path\to\jdk-21\bin\java.exe"
 rem     ServerPackCreator-Setup.bat -JarPath ".\serverpackcreator-app.jar"
 rem     ServerPackCreator-Setup.bat -Uninstall
@@ -22,7 +28,7 @@ rem ===========================================================================
 setlocal enableextensions
 set "SPC_SELF=%~f0"
 set "SPC_UNINSTALL="
-set "SPC_INSTALLDIR="
+set "SPC_LOCATION="
 set "SPC_JARPATH="
 set "SPC_JAVAPATH="
 
@@ -30,7 +36,8 @@ set "SPC_JAVAPATH="
 if "%~1"=="" goto parsed
 if /i "%~1"=="-uninstall"   set "SPC_UNINSTALL=1"           & shift & goto parse
 if /i "%~1"=="/uninstall"   set "SPC_UNINSTALL=1"           & shift & goto parse
-if /i "%~1"=="-installdir"  set "SPC_INSTALLDIR=%~2"        & shift & shift & goto parse
+if /i "%~1"=="-location"    set "SPC_LOCATION=%~2"          & shift & shift & goto parse
+if /i "%~1"=="-installdir"  set "SPC_LOCATION=%~2"          & shift & shift & goto parse
 if /i "%~1"=="-jarpath"     set "SPC_JARPATH=%~2"           & shift & shift & goto parse
 if /i "%~1"=="-javapath"    set "SPC_JAVAPATH=%~2"          & shift & shift & goto parse
 if /i "%~1"=="-nopause"     set "SPC_NOPAUSE=1"            & shift & goto parse
@@ -43,9 +50,10 @@ goto usage
 echo.
 echo Usage: ServerPackCreator-Setup.bat [options]
 echo.
-echo   -InstallDir ^<path^>  Where to install. Omit it to be asked. Default:
-echo                        D:\ServerPackCreator, or %%LOCALAPPDATA%%\ServerPackCreator
-echo                        when this machine has no writable D: drive
+echo   -Location ^<path^>    Where to put ServerPackCreator. Its own folder is
+echo                        created inside that location, so nothing is written
+echo                        directly into it. Omit to be asked. Default: D:\, or
+echo                        %%LOCALAPPDATA%% if D: is not writable
 echo   -JavaPath    ^<path^>  Path to java.exe to use.
 echo   -JarPath     ^<path^>  Install from a local JAR instead of downloading one.
 echo   -Uninstall           Remove a previous installation.
@@ -92,26 +100,31 @@ $JarFileName  = 'serverpackcreator-app.jar'   # stable name, so /releases/latest
 $JarUrl       = "https://github.com/$Repo/releases/latest/download/$JarFileName"
 $MinJavaMajor = 21
 
-# Everything - the JAR, the launchers and the working directories - lives in one
-# folder. That folder is ServerPackCreator's home, and the launchers pass it as --home.
-$preferredDrive = 'D:\'
-$preferredDir   = 'D:\ServerPackCreator'
-$fallbackDir    = Join-Path $env:LOCALAPPDATA $AppName
+# The location is a place to put ServerPackCreator *in* - never the folder it is
+# installed *as*. Its own folder is created inside whatever is chosen, so pointing
+# at somewhere that already holds other files (a desktop, a downloads folder, D:\)
+# cannot scatter the application and its working directories among them.
+$AppFolderName = $AppName
 
-$InstallDir        = $env:SPC_INSTALLDIR
-$defaultInstallDir = $fallbackDir
+# Everything - the JAR, the launchers and the working directories - ends up in that
+# single folder, which is ServerPackCreator's home. The launchers pass it as --home.
+$preferredLocation = 'D:\'
+$fallbackLocation  = $env:LOCALAPPDATA
 
-# Prefer D:\ServerPackCreator, but only if D: exists and we can actually write to
-# its root - a standard user can create folders there on most systems, not all.
+$Location        = $env:SPC_LOCATION
+$defaultLocation = $fallbackLocation
+
+# Prefer D:\ but only if it exists and its root is actually writable - a standard
+# user can create folders there on most systems, not all.
 try {
-    if (Test-Path -LiteralPath $preferredDrive) {
-        $probe = Join-Path $preferredDrive ("{0}-write-test-{1}" -f $AppName, $PID)
+    if (Test-Path -LiteralPath $preferredLocation) {
+        $probe = Join-Path $preferredLocation ("{0}-write-test-{1}" -f $AppName, $PID)
         New-Item -ItemType Directory -Path $probe -Force | Out-Null
         Remove-Item -LiteralPath $probe -Force
-        $defaultInstallDir = $preferredDir
+        $defaultLocation = $preferredLocation
     }
 } catch {
-    $defaultInstallDir = $fallbackDir
+    $defaultLocation = $fallbackLocation
 }
 
 $JavaPath   = $env:SPC_JAVAPATH
@@ -128,32 +141,47 @@ if ($PSVersionTable.PSVersion.Major -lt 6) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 }
 
-# Ask where to install, unless -InstallDir was passed. Enter accepts the default.
-# Skipped when stdin is not a terminal, so redirected and unattended runs do not hang.
-if (-not $InstallDir) {
+# Turn the chosen location into the folder that actually holds everything.
+function Resolve-InstallDir {
+    param([string]$Base)
+    $full = [IO.Path]::GetFullPath($Base)
+    # Already pointing at a ServerPackCreator folder? Use it rather than nesting
+    # another one inside it.
+    if ((Split-Path -Leaf $full) -ieq $AppFolderName) { return $full }
+    return (Join-Path $full $AppFolderName)
+}
+
+# Ask where to put it, unless -Location was passed. Enter accepts the default.
+# Skipped when stdin is not a terminal, so redirected and unattended runs cannot
+# hang waiting for an answer.
+if (-not $Location) {
     $answer = ''
     try {
         if (-not [Console]::IsInputRedirected) {
             Write-Host ''
-            Write-Host '  Where should ServerPackCreator be installed?'
+            if ($Uninstall) {
+                Write-Host "  Where was $AppName installed?"
+            } else {
+                Write-Host "  Where should $AppName be installed?"
+            }
+            Write-Host "  A folder named $AppFolderName is created inside that location." -ForegroundColor DarkGray
             Write-Host '  Press Enter to accept the default.' -ForegroundColor DarkGray
             Write-Host ''
-            Write-Host '  Install location ' -NoNewline
-            Write-Host "[$defaultInstallDir]" -NoNewline -ForegroundColor DarkGray
+            Write-Host '  Location ' -NoNewline
+            Write-Host "[$defaultLocation]" -NoNewline -ForegroundColor DarkGray
             Write-Host ' '
             $answer = Read-Host
         }
     } catch {
         $answer = ''
     }
-    $InstallDir = if ($answer -and $answer.Trim()) { $answer.Trim().Trim('"') } else { $defaultInstallDir }
+    $Location = if ($answer -and $answer.Trim()) { $answer.Trim().Trim('"') } else { $defaultLocation }
 }
 
-# Resolve to an absolute path so the launchers and the reported location agree.
 try {
-    $InstallDir = [IO.Path]::GetFullPath($InstallDir)
+    $InstallDir = Resolve-InstallDir $Location
 } catch {
-    Fail "Not a usable install path: $InstallDir"
+    Fail "Not a usable location: $Location"
 }
 
 function Get-JavaMajorVersion {
@@ -525,5 +553,5 @@ Write-Host ''
 Write-Host "  Configurations, server packs and logs are in that same folder."
 Write-Host ''
 Write-Host "  To remove it again:"
-Write-Host "    ServerPackCreator-Setup.bat -Uninstall -InstallDir `"$InstallDir`""
+Write-Host "    ServerPackCreator-Setup.bat -Uninstall -Location `"$InstallDir`""
 Write-Host ''

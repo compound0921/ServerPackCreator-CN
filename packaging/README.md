@@ -23,12 +23,9 @@ Download **`ServerPackCreator-Setup.bat`** and double-click it.
 
     https://github.com/compound0921/ServerPackCreator-CN/releases/latest/download/ServerPackCreator-Setup.bat
 
-That single file is the whole installer. It asks where to install, checks for Java, downloads
-the application, and creates the launchers and a Start Menu entry. No administrator rights are
-needed.
-
-The suggested location is `D:\ServerPackCreator`. On a machine without a writable `D:` drive
-the suggestion falls back to `%LOCALAPPDATA%\ServerPackCreator`.
+That single file is the whole installer. It asks where to put ServerPackCreator, checks for
+Java, downloads the application, and creates the launchers and a Start Menu entry. No
+administrator rights are needed.
 
 The download shows progress, so a slow connection does not look like a hang:
 
@@ -43,17 +40,40 @@ The download shows progress, so a slow connection does not look like a hang:
 
 ### Choosing where it goes
 
-Just press Enter to accept the suggested location, or type another one. To skip the question —
-from a command prompt, in the folder you saved the file to:
+You are asked for a **location**, not for the installation folder itself. ServerPackCreator
+creates a folder named `ServerPackCreator` inside that location and puts everything there, so
+nothing is ever written directly into the location you name.
+
+That means pointing it at your desktop gives you `Desktop\ServerPackCreator\` and leaves the
+desktop itself untouched — no `configs`, `logs` or `modpacks` scattered among your own files.
+
+Press Enter to accept the suggested location (`D:\`), or type another one:
 
 ```
-ServerPackCreator-Setup.bat -InstallDir "D:\ServerPackCreator"
+  Where should ServerPackCreator be installed?
+  A folder named ServerPackCreator is created inside that location.
+  Press Enter to accept the default.
+
+  Location [D:\]:
 ```
 
-Scripts and unattended runs should pass `-InstallDir`. When input is not a terminal the
-question is skipped automatically and the default is used.
+On a machine without a writable `D:` drive the suggestion is `%LOCALAPPDATA%` instead — which
+is also a location, so the result is `%LOCALAPPDATA%\ServerPackCreator`.
+
+If the path you give already ends in `ServerPackCreator`, it is used as-is rather than nesting
+a second folder of the same name inside it.
 
 ### Other options
+
+To skip the question — from a command prompt, in the folder you saved the file to:
+
+```
+ServerPackCreator-Setup.bat -Location "D:\"
+ServerPackCreator-Setup.bat -Location "C:\Users\you\Desktop"
+```
+
+Scripts and unattended runs should pass `-Location`. When input is not a terminal the question
+is skipped automatically and the default is used.
 
 ```
 ServerPackCreator-Setup.bat -JavaPath "C:\Program Files\Microsoft\jdk-21.0.8.9-hotspot\bin\java.exe"
@@ -65,15 +85,15 @@ ServerPackCreator-Setup.bat -help
 
 ## Use
 
-Everything lives in a single folder, `<InstallDir>` — the application, the launchers and all
-the working directories, with nothing nested inside:
+Everything lives in one folder — the application, the launchers and all the working
+directories, with nothing outside it:
 
 ```
-D:\ServerPackCreator\
+D:\ServerPackCreator\                  <- created inside the location you chose
   serverpackcreator-app.jar
-  ServerPackCreator.bat            GUI
-  ServerPackCreator-CLI.bat        command line
-  ServerPackCreator-WebService.bat web service
+  ServerPackCreator.bat                GUI
+  ServerPackCreator-CLI.bat            command line
+  ServerPackCreator-WebService.bat     web service
   NOTICE.md  LICENSE
   configs\  logs\  manifests\  modpacks\
   plugins\  server-packs\  server_files\  themes\  work\
@@ -85,8 +105,11 @@ the installation keeps working if you move the whole folder somewhere else.
 ## Uninstall
 
 ```
-ServerPackCreator-Setup.bat -Uninstall -InstallDir "D:\ServerPackCreator"
+ServerPackCreator-Setup.bat -Uninstall -Location "D:\"
 ```
+
+Pass the same location you installed with — the folder named `ServerPackCreator` inside it is
+what gets deleted. Naming the folder itself works too.
 
 Or just run the same file with `-Uninstall` if you installed to the default location. It
 deletes the installation directory, the Start Menu entry, and the stored home-directory

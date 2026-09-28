@@ -25,7 +25,10 @@ Download **`ServerPackCreator-Setup.bat`** and double-click it.
 
 That single file is the whole installer. It asks where to install, checks for Java, downloads
 the application, and creates the launchers and a Start Menu entry. No administrator rights are
-needed; the suggested location is `%LOCALAPPDATA%\ServerPackCreator`.
+needed.
+
+The suggested location is `D:\ServerPackCreator`. On a machine without a writable `D:` drive
+the suggestion falls back to `%LOCALAPPDATA%\ServerPackCreator`.
 
 The download shows progress, so a slow connection does not look like a hang:
 
@@ -62,17 +65,22 @@ ServerPackCreator-Setup.bat -help
 
 ## Use
 
-Installed to `<InstallDir>\ServerPackCreator\`:
+Everything lives in a single folder, `<InstallDir>` — the application, the launchers and all
+the working directories, with nothing nested inside:
 
-| Launcher | Mode |
-| --- | --- |
-| `ServerPackCreator.bat` | GUI |
-| `ServerPackCreator-CLI.bat` | Command line |
-| `ServerPackCreator-WebService.bat` | Web service |
+```
+D:\ServerPackCreator\
+  serverpackcreator-app.jar
+  ServerPackCreator.bat            GUI
+  ServerPackCreator-CLI.bat        command line
+  ServerPackCreator-WebService.bat web service
+  NOTICE.md  LICENSE
+  configs\  logs\  manifests\  modpacks\
+  plugins\  server-packs\  server_files\  themes\  work\
+```
 
-Configurations, server packs, manifests, plugins and logs live in `<InstallDir>`, one level
-above the launchers. That directory is ServerPackCreator's *home*; the launchers pass it
-explicitly, so the installation keeps working if you move the whole folder.
+That folder is ServerPackCreator's *home*. The launchers pass it explicitly with `--home`, so
+the installation keeps working if you move the whole folder somewhere else.
 
 ## Uninstall
 

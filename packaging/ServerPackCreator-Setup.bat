@@ -44,7 +44,8 @@ echo.
 echo Usage: ServerPackCreator-Setup.bat [options]
 echo.
 echo   -InstallDir ^<path^>  Where to install. Omit it to be asked. Default:
-echo                        %%LOCALAPPDATA%%\ServerPackCreator
+echo                        D:\ServerPackCreator, or %%LOCALAPPDATA%%\ServerPackCreator
+echo                        when this machine has no writable D: drive
 echo   -JavaPath    ^<path^>  Path to java.exe to use.
 echo   -JarPath     ^<path^>  Install from a local JAR instead of downloading one.
 echo   -Uninstall           Remove a previous installation.
@@ -87,16 +88,35 @@ $Version = '8.1.2'
 $UpstreamUrl = 'https://github.com/Griefed/ServerPackCreator'
 
 $AppName      = 'ServerPackCreator'
-$AppSubdir    = 'ServerPackCreator'    # holds the JAR and launchers
 $JarFileName  = 'serverpackcreator-app.jar'   # stable name, so /releases/latest/download/ always resolves
 $JarUrl       = "https://github.com/$Repo/releases/latest/download/$JarFileName"
 $MinJavaMajor = 21
 
+# Everything - the JAR, the launchers and the working directories - lives in one
+# folder. That folder is ServerPackCreator's home, and the launchers pass it as --home.
+$preferredDrive = 'D:\'
+$preferredDir   = 'D:\ServerPackCreator'
+$fallbackDir    = Join-Path $env:LOCALAPPDATA $AppName
+
 $InstallDir        = $env:SPC_INSTALLDIR
-$defaultInstallDir = Join-Path $env:LOCALAPPDATA $AppName
-$JavaPath          = $env:SPC_JAVAPATH
-$JarPath           = $env:SPC_JARPATH
-$Uninstall         = [bool]$env:SPC_UNINSTALL
+$defaultInstallDir = $fallbackDir
+
+# Prefer D:\ServerPackCreator, but only if D: exists and we can actually write to
+# its root - a standard user can create folders there on most systems, not all.
+try {
+    if (Test-Path -LiteralPath $preferredDrive) {
+        $probe = Join-Path $preferredDrive ("{0}-write-test-{1}" -f $AppName, $PID)
+        New-Item -ItemType Directory -Path $probe -Force | Out-Null
+        Remove-Item -LiteralPath $probe -Force
+        $defaultInstallDir = $preferredDir
+    }
+} catch {
+    $defaultInstallDir = $fallbackDir
+}
+
+$JavaPath   = $env:SPC_JAVAPATH
+$JarPath    = $env:SPC_JARPATH
+$Uninstall  = [bool]$env:SPC_UNINSTALL
 
 function Write-Step  { param([string]$m) Write-Host "  $m" }
 function Write-Ok    { param([string]$m) Write-Host "  $m" -ForegroundColor Green }
@@ -230,8 +250,9 @@ where %SPC_JAVA% >nul 2>&1
 if errorlevel 1 goto nojava
 
 :javafound
-rem This script lives in <home>\ServerPackCreator\, so the parent is the SPC home-directory.
-for %%I in ("%~dp0..") do set "SPC_HOME=%%~fI"
+rem This script lives in the home-directory itself, so that is what --home gets.
+rem The trailing dot makes %%~fI drop the trailing backslash of %~dp0.
+for %%I in ("%~dp0.") do set "SPC_HOME=%%~fI"
 cd /d "%~dp0"
 __SPC_LAUNCH__"%SPC_JAVA%" -jar "%~dp0__SPC_JAR__" --home "%SPC_HOME%" __SPC_ARGS__%*
 exit /b 0
@@ -410,7 +431,8 @@ function Get-RemoteFile {
 
 # ---------------------------------------------------------------- jar
 
-$appDir = Join-Path $InstallDir $AppSubdir
+# Flat layout: the JAR and launchers sit in the home-directory itself.
+$appDir = $InstallDir
 
 Write-Step "Creating $appDir ..."
 New-Item -ItemType Directory -Path $appDir -Force | Out-Null
@@ -468,7 +490,6 @@ foreach ($doc in $docs) {
     try {
         Invoke-WebRequest -Uri $doc.Url -OutFile $tmp -UseBasicParsing -ErrorAction Stop
         Copy-Item -LiteralPath $tmp -Destination (Join-Path $InstallDir $doc.Name) -Force
-        Copy-Item -LiteralPath $tmp -Destination (Join-Path $appDir $doc.Name) -Force
         Remove-Item -LiteralPath $tmp -Force
     } catch {
         Write-Warn2 "Could not install $($doc.Name): $($_.Exception.Message)"
@@ -495,11 +516,13 @@ try {
 # ---------------------------------------------------------------- done
 
 Write-Host "`nInstalled successfully.`n" -ForegroundColor Green
-Write-Host "  Start it from the Start Menu, or run:"
-Write-Host "    $(Join-Path $appDir "$AppName.bat")"
-Write-Host ''
-Write-Host "  Configurations, server packs and logs live in:"
+Write-Host "  Everything lives in:"
 Write-Host "    $InstallDir"
+Write-Host ''
+Write-Host "  Start it from the Start Menu, or run:"
+Write-Host "    $(Join-Path $InstallDir "$AppName.bat")"
+Write-Host ''
+Write-Host "  Configurations, server packs and logs are in that same folder."
 Write-Host ''
 Write-Host "  To remove it again:"
 Write-Host "    ServerPackCreator-Setup.bat -Uninstall -InstallDir `"$InstallDir`""

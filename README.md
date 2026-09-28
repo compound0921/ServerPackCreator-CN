@@ -6,7 +6,7 @@
 > problems with this build to the upstream project.
 >
 > **To install it, download and run
-> [`ServerPackCreator-Setup.bat`](https://github.com/compound0921/ServerPackCreator-CN/releases/latest/download/ServerPackCreator-Setup.bat)**
+> [`ServerPackCreator-Setup.bat`](https://github.com/compound0921/ServerPackCreator-Patch/releases/latest/download/ServerPackCreator-Setup.bat)**
 > — one file, double-click it, no build tools needed. It requires Java 21 or newer.
 >
 > What differs from upstream, and why, is documented in

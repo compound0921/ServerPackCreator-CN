@@ -38,7 +38,7 @@ above move that work off the startup path and bound every network wait.
 
 The complete corresponding source code for this build is published at:
 
-    https://github.com/compound0921/ServerPackCreator-CN
+    https://github.com/compound0921/ServerPackCreator-Patch
 
 If you received this build without that source, the LGPL requires the distributor to provide
 it on request.

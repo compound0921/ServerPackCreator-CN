@@ -1,0 +1,468 @@
+--- a/serverpackcreator-api/src/main/kotlin/de/griefed/serverpackcreator/api/ApiProperties.kt
++++ b/serverpackcreator-api/src/main/kotlin/de/griefed/serverpackcreator/api/ApiProperties.kt
+@@ -38,6 +38,7 @@
+ import java.net.URI
+ import java.net.URL
+ import java.util.*
++import java.util.concurrent.Executors
+ import java.util.prefs.Preferences
+ 
+ /**
+@@ -2302,12 +2303,12 @@
+         // Load all values from the overrides-properties
+         loadOverrides(overridesPropertiesFile)
+ 
+-        if (updateFallback()) {
+-            log.info("Fallback lists updated.")
+-        } else {
+-            setFallbackModsList()
+-            setFallbackWhitelist()
+-        }
++        // Populate the fallback lists from our local properties right away, and check for updated
++        // lists in the background. Downloading them used to happen right here, which stalled every
++        // startup until GitHub answered.
++        setFallbackModsList()
++        setFallbackWhitelist()
++        updateFallbackAsync()
+         if (saveProps) {
+             //Store properties in the configured SPC home-directory
+             saveProperties(serverPackCreatorPropertiesFile)
+@@ -2696,10 +2697,36 @@
+      *
+      * `true` if either was updated.
+      */
++    @Volatile
+     var fallbackUpdated: Boolean = false
+         private set
+ 
+     /**
++     * Executor used to check for updated fallback lists without blocking startup or the
++     * event-dispatch-thread.
++     */
++    private val fallbackUpdateExecutor = Executors.newSingleThreadExecutor { runnable ->
++        Thread(runnable, "ServerPackCreator-fallback-update").apply { isDaemon = true }
++    }
++
++    /**
++     * Update the fallback lists in the background, so neither the startup of ServerPackCreator nor
++     * the event-dispatch-thread has to wait for GitHub to answer.
++     *
++     * Should the remote lists differ from our local ones, [clientsideMods] and [modsWhitelist] are
++     * replaced once the download has finished, and [fallbackUpdated] is set to `true`.
++     *
++     * @author Griefed
++     */
++    fun updateFallbackAsync() {
++        fallbackUpdateExecutor.execute {
++            if (updateFallback()) {
++                log.info("Fallback lists updated.")
++            }
++        }
++    }
++
++    /**
+      * Update the fallback clientside-only mod-list of our `serverpackcreator.properties` from
+      * the main-repository or one of its mirrors.
+      *
+@@ -2709,9 +2736,9 @@
+     fun updateFallback(): Boolean {
+         var properties: Properties? = null
+         try {
+-            URI(
+-                acquireProperty(pConfigurationFallbackUpdateURL, fallbackUpdateURL)
+-            ).toURL().openStream().use {
++            WebUtilities.openConnection(
++                URI(acquireProperty(pConfigurationFallbackUpdateURL, fallbackUpdateURL)).toURL()
++            ).inputStream.use {
+                 properties = Properties()
+                 properties!!.load(it)
+             }
+@@ -2724,8 +2751,9 @@
+             val currentBlacklist = internalProps.getProperty(pConfigurationFallbackModsList)
+             if (newBlacklist != null && currentBlacklist != newBlacklist) {
+                 internalProps.setProperty(pConfigurationFallbackModsList, newBlacklist)
+-                clientsideMods.clear()
+-                clientsideMods.addAll(internalProps.getProperty(pConfigurationFallbackModsList).split(","))
++                // Assign a fresh set instead of clearing and refilling ours in place, so readers
++                // iterating over it cannot run into a ConcurrentModificationException.
++                clientsideMods = TreeSet(newBlacklist.split(","))
+                 log.info("The fallback-list for clientside only mods has been updated to: $clientsideMods")
+                 fallbackUpdated = true
+             }
+@@ -2734,8 +2762,7 @@
+             val currentWhitelist = internalProps.getProperty(pConfigurationFallbackModsWhiteList)
+             if (newWhitelist != null && currentWhitelist != newWhitelist) {
+                 internalProps.setProperty(pConfigurationFallbackModsWhiteList, newWhitelist)
+-                modsWhitelist.clear()
+-                modsWhitelist.addAll(internalProps.getProperty(pConfigurationFallbackModsWhiteList).split(","))
++                modsWhitelist = TreeSet(newWhitelist.split(","))
+                 log.info("The fallback-list for whitelisted mods has been updated to: $modsWhitelist")
+                 fallbackUpdated = true
+             }
+--- a/serverpackcreator-api/src/main/kotlin/de/griefed/serverpackcreator/api/utilities/common/WebUtilities.kt
++++ b/serverpackcreator-api/src/main/kotlin/de/griefed/serverpackcreator/api/utilities/common/WebUtilities.kt
+@@ -39,6 +39,40 @@
+ class WebUtilities(private val apiProperties: ApiProperties) {
+     private val log by lazy { cachedLoggerOf(this.javaClass) }
+ 
++    companion object {
++        /**
++         * Time to wait for a connection to be established, in milliseconds. The JVM defaults to `0`
++         * here, which means "wait forever" - a single unresponsive host would then stall whichever
++         * thread made the call, including the main thread during the startup of ServerPackCreator.
++         */
++        const val CONNECT_TIMEOUT_MILLISECONDS = 5_000
++
++        /**
++         * Time to wait for data on an already established connection, in milliseconds. This is a
++         * timeout per read, not for the whole transfer, so downloads are unaffected for as long as
++         * data keeps arriving.
++         */
++        const val READ_TIMEOUT_MILLISECONDS = 15_000
++
++        /**
++         * Open a connection to the given URL with sane connect- and read-timeouts applied, so a
++         * web-resource which is unreachable or hanging cannot block the calling thread indefinitely.
++         *
++         * Use this instead of [URL.openConnection] or [URL.openStream] for anything reaching out to
++         * a host you do not control.
++         *
++         * @param url The URL to open a connection to.
++         * @return The connection, with [HttpURLConnection.connectTimeout] and
++         * [HttpURLConnection.readTimeout] set.
++         * @author Griefed
++         */
++        fun openConnection(url: URL): HttpURLConnection =
++            (url.openConnection() as HttpURLConnection).also {
++                it.connectTimeout = CONNECT_TIMEOUT_MILLISECONDS
++                it.readTimeout = READ_TIMEOUT_MILLISECONDS
++            }
++    }
++
+     /**
+      * Download the file from the specified URL to the specified destination, replacing the file if it
+      * already exists. The destination should end in a valid filename. Any directories up to the
+@@ -76,7 +110,7 @@
+     ): Boolean {
+         file.create()
+         try {
+-            downloadURL.openStream().use { url ->
++            openConnection(downloadURL).inputStream.use { url ->
+                 Channels.newChannel(url).use { channel ->
+                     file.outputStream().use { stream ->
+                         stream.channel.transferFrom(channel, 0, Long.MAX_VALUE)
+@@ -169,7 +203,7 @@
+         val postDataLength = postData.size
+ 
+         try {
+-            conn = url.openConnection() as HttpsURLConnection
++            conn = openConnection(url) as HttpsURLConnection
+         } catch (ex: IOException) {
+             log.error("Error during opening of connection to URL.", ex)
+         }
+@@ -241,7 +275,7 @@
+      */
+     @Throws(IOException::class)
+     fun getResponseAsString(url: URL): String {
+-        val `in` = BufferedReader(InputStreamReader(url.openConnection().getInputStream()))
++        val `in` = BufferedReader(InputStreamReader(openConnection(url).inputStream))
+         val response = StringBuilder()
+         var currentLine: String?
+         while (`in`.readLine().also { currentLine = it } != null) {
+@@ -260,8 +294,7 @@
+      */
+     @Throws(IOException::class)
+     fun getResponseCode(url: URL): Int {
+-        val connection = url.openConnection() as HttpURLConnection
+-        return connection.responseCode
++        return openConnection(url).responseCode
+     }
+ 
+     /**
+@@ -279,7 +312,7 @@
+             val host = url.host
+             log.trace("URL:  $url")
+             log.trace("Host: $host")
+-            connection = url.openConnection() as HttpURLConnection
++            connection = openConnection(url)
+             available = connection.responseCode == 200
+         } catch (e: IOException) {
+             available = false
+--- a/serverpackcreator-api/src/main/kotlin/de/griefed/serverpackcreator/api/versionmeta/VersionMeta.kt
++++ b/serverpackcreator-api/src/main/kotlin/de/griefed/serverpackcreator/api/versionmeta/VersionMeta.kt
+@@ -23,6 +23,7 @@
+ import de.griefed.serverpackcreator.api.ApiProperties
+ import de.griefed.serverpackcreator.api.utilities.common.JarUtilities
+ import de.griefed.serverpackcreator.api.utilities.common.Utilities
++import de.griefed.serverpackcreator.api.utilities.common.WebUtilities
+ import de.griefed.serverpackcreator.api.utilities.common.create
+ import de.griefed.serverpackcreator.api.utilities.common.readText
+ import de.griefed.serverpackcreator.api.versionmeta.fabric.FabricIntermediaries
+@@ -299,15 +300,9 @@
+         manifestType: Type
+     ) {
+         if (manifestToCheck.isFile) {
+-            if (!utilities.webUtilities.isReachable(urlToManifest)) {
+-                log.warn(
+-                    "Can not connect to $urlToManifest to check for update(s) of $manifestToCheck."
+-                )
+-                return
+-            }
+             try {
+                 manifestToCheck.inputStream().use { existing ->
+-                    urlToManifest.openStream().use { newManifest ->
++                    WebUtilities.openConnection(urlToManifest).inputStream.use { newManifest ->
+                         var countOldFile = 0
+                         var countNewFile = 0
+                         val oldContent: String = existing.readText()
+@@ -392,14 +387,12 @@
+                 log.error("Couldn't refresh manifest $manifestToCheck", ex)
+             }
+         } else {
+-            if (!utilities.webUtilities.isReachable(urlToManifest)) {
++            if (!updateManifest(manifestToCheck, urlToManifest)) {
+                 log.error("CRITICAL! $manifestToCheck not present and $ urlToManifest unreachable. Exiting...")
+                 log.error(
+                     "ServerPackCreator should have provided default manifests. Please report this on GitHub at https://github.com/Griefed/ServerPackCreator/issues/new?assignees=Griefed&labels=bug&template=bug-report.yml&title=%5BBug%5D%3A+"
+                 )
+                 log.error("Make sure you include this log when reporting an error! Please....")
+-            } else {
+-                updateManifest(manifestToCheck, urlToManifest)
+             }
+         }
+     }
+@@ -426,19 +419,22 @@
+      *
+      * @param manifestToRefresh The manifest file to update.
+      * @param urlToManifest     The URL to the file which is to be downloaded.
++     * @return `true` if the manifest could be downloaded and written.
+      * @author whitebear60
+      * @author Griefed
+      */
+     private fun updateManifest(
+         manifestToRefresh: File,
+         urlToManifest: URL
+-    ) {
+-        try {
+-            urlToManifest.openStream().use {
++    ): Boolean {
++        return try {
++            WebUtilities.openConnection(urlToManifest).inputStream.use {
+                 updateManifest(manifestToRefresh, it.readText())
+             }
++            true
+         } catch (ex: IOException) {
+             log.error("An error occurred refreshing $manifestToRefresh.", ex)
++            false
+         }
+     }
+ 
+--- a/serverpackcreator-app/src/main/kotlin/de/griefed/serverpackcreator/app/gui/window/UpdateDialogs.kt
++++ b/serverpackcreator-app/src/main/kotlin/de/griefed/serverpackcreator/app/gui/window/UpdateDialogs.kt
+@@ -33,9 +33,11 @@
+ import java.awt.datatransfer.StringSelection
+ import java.awt.event.ActionListener
+ import java.util.*
++import java.util.concurrent.Executors
+ import javax.swing.JFrame
+ import javax.swing.JOptionPane
+ import javax.swing.JTextPane
++import javax.swing.SwingUtilities
+ import javax.swing.text.*
+ 
+ /**
+@@ -57,18 +59,30 @@
+     private var i4JExecute = false*/
+     val updateButton = BalloonTipButton(null, guiProps.updateAnimation, Translations.update_dialog_available.toString(), guiProps)
+     val updateCheckListener = ActionListener { checkForUpdate() }
+-    var update: Optional<Update> = updateChecker.checkForUpdate(
+-        apiProperties.apiVersion,
+-        apiProperties.isCheckingForPreReleasesEnabled
+-    )
+-        private set
+ 
++    /**
++     * The update found for this instance, if any. Populated in the background shortly after
++     * construction - see [init].
++     */
++    @Volatile
++    var update: Optional<Update> = Optional.empty()
++        private set
+ 
+     init {
+         updateButton.isBorderPainted = false
+         updateButton.isContentAreaFilled = false
+         updateButton.isVisible = update.isPresent
+         updateButton.addActionListener(updateCheckListener)
++        // Check for a new release in the background, so building the main window does not have to
++        // wait for GitHub. The update-button pops in once the check has finished.
++        UPDATE_CHECK_EXECUTOR.execute {
++            val checked = updateChecker.checkForUpdate(
++                apiProperties.apiVersion,
++                apiProperties.isCheckingForPreReleasesEnabled
++            )
++            update = checked
++            SwingUtilities.invokeLater { updateButton.isVisible = checked.isPresent }
++        }
+         //checkForUpdateWithApi()
+     }
+ 
+@@ -349,4 +363,14 @@
+             )
+         }.start()
+     }*/
++
++    companion object {
++        /**
++         * Executor used to check for a new release in the background, so building the main window
++         * does not have to wait for GitHub.
++         */
++        private val UPDATE_CHECK_EXECUTOR = Executors.newSingleThreadExecutor { runnable ->
++            Thread(runnable, "ServerPackCreator-update-dialogs").apply { isDaemon = true }
++        }
++    }
+ }
+\ No newline at end of file
+--- a/serverpackcreator-app/src/main/kotlin/de/griefed/serverpackcreator/app/updater/UpdateChecker.kt
++++ b/serverpackcreator-app/src/main/kotlin/de/griefed/serverpackcreator/app/updater/UpdateChecker.kt
+@@ -25,6 +25,9 @@
+ import org.apache.logging.log4j.kotlin.cachedLoggerOf
+ import java.io.IOException
+ import java.util.*
++import java.util.concurrent.Callable
++import java.util.concurrent.Executors
++import java.util.concurrent.Future
+ 
+ /**
+  * Initialize our GitHub and GitLab instances with the corresponding repository addresses, so we can
+@@ -34,23 +37,43 @@
+  */
+ class UpdateChecker(private val apiProperties: ApiProperties) {
+     private val log by lazy { cachedLoggerOf(this.javaClass) }
+-    private var gitHub: GitHubChecker? = null
+ 
+     /**
+-     * Constructor for Dependency Injection.
++     * The initial GitHub-check is performed in the background. Doing it in the constructor blocked
++     * every startup until GitHub answered, even though nothing needs the result right away.
+      *
++     * Callers which do need it await this future via [gitHub].
++     */
++    private val gitHubPrefetch: Future<GitHubChecker?> =
++        REFRESH_EXECUTOR.submit(Callable { initGitHub() })
++
++    /**
++     * Initialize our [GitHubChecker].
++     *
++     * @return The initialized checker, or `null` if GitHub could not be reached.
+      * @author Griefed
+      */
+-    init {
+-        gitHub = try {
+-            GitHubChecker("Griefed/ServerPackCreator").refresh()
+-        } catch (ex: IOException) {
+-            log.error(
+-                "Either GitHub is currently unreachable, or the GitHub user/repository you set resulted in a malformed URL. "
+-                        + ex.message
+-            )
+-            null
+-        }
++    private fun initGitHub(): GitHubChecker? = try {
++        GitHubChecker("Griefed/ServerPackCreator").refresh()
++    } catch (ex: IOException) {
++        log.error(
++            "Either GitHub is currently unreachable, or the GitHub user/repository you set resulted in a malformed URL. "
++                    + ex.message
++        )
++        null
++    }
++
++    /**
++     * Our [GitHubChecker], awaiting the background prefetch should it not have finished yet.
++     *
++     * @return Our [GitHubChecker], or `null` if GitHub could not be reached.
++     * @author Griefed
++     */
++    private fun gitHub(): GitHubChecker? = try {
++        gitHubPrefetch.get()
++    } catch (ex: Exception) {
++        log.error("Error acquiring GitHub-checker.", ex)
++        null
+     }
+ 
+     /**
+@@ -59,15 +82,15 @@
+      * @author Griefed
+      */
+     private fun refresh() {
+-        if (gitHub == null) {
++        val checker = gitHub()
++        if (checker == null) {
+             log.warn("Not checking for updates. GitHub Checking not initialized.")
+             return
+         }
+         try {
+-            gitHub!!.refresh()
++            checker.refresh()
+         } catch (ex: Exception) {
+             log.error("Error refreshing GitHub.", ex)
+-            gitHub = null
+         }
+ 
+     }
+@@ -84,12 +107,13 @@
+      * @author Griefed
+      */
+     fun checkForUpdate(version: String, preReleaseCheck: Boolean): Optional<Update> {
+-        if (version.equals("dev", ignoreCase = true) || gitHub == null) {
++        val checker = gitHub()
++        if (version.equals("dev", ignoreCase = true) || checker == null) {
+             log.warn("Not checking for updates. Either using a dev-version, or GitHub Checking is not initialized.")
+             return Optional.empty()
+         }
+         log.debug("Checking GitHub for updates...")
+-        return gitHub!!.check(version, preReleaseCheck)
++        return checker.check(version, preReleaseCheck)
+     }
+ 
+     /**
+@@ -126,4 +150,14 @@
+ 
+         return update.isPresent
+     }
++
++    companion object {
++        /**
++         * Executor used to perform the initial GitHub-check in the background, so it does not block
++         * the startup of ServerPackCreator.
++         */
++        private val REFRESH_EXECUTOR = Executors.newSingleThreadExecutor { runnable ->
++            Thread(runnable, "ServerPackCreator-update-check").apply { isDaemon = true }
++        }
++    }
+ }
+\ No newline at end of file
+--- a/serverpackcreator-app/src/main/kotlin/de/griefed/serverpackcreator/app/updater/versionchecker/VersionChecker.kt
++++ b/serverpackcreator-app/src/main/kotlin/de/griefed/serverpackcreator/app/updater/versionchecker/VersionChecker.kt
+@@ -27,11 +27,11 @@
+ import com.fasterxml.jackson.databind.ObjectMapper
+ import de.griefed.serverpackcreator.api.utilities.common.Comparison
+ import de.griefed.serverpackcreator.api.utilities.common.SemanticVersionComparator
++import de.griefed.serverpackcreator.api.utilities.common.WebUtilities
+ import org.apache.logging.log4j.kotlin.cachedLoggerOf
+ import java.io.BufferedReader
+ import java.io.IOException
+ import java.io.InputStreamReader
+-import java.net.HttpURLConnection
+ import java.net.URL
+ import java.util.*
+ 
+@@ -301,7 +301,7 @@
+      */
+     @Throws(IOException::class)
+     protected fun getResponse(requestUrl: URL): String {
+-        val httpURLConnection = requestUrl.openConnection() as HttpURLConnection
++        val httpURLConnection = WebUtilities.openConnection(requestUrl)
+         httpURLConnection.requestMethod = "GET"
+         if (httpURLConnection.responseCode != 200) throw IOException("Request for " + requestUrl + " responded with " + httpURLConnection.responseCode)
+         val bufferedReader = BufferedReader(
